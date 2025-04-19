@@ -1,89 +1,134 @@
 import os
+import re
 import pickle
+import torch
 import numpy as np
 import pandas as pd
-import re
+import streamlit as st
+
 import nltk
 from nltk.corpus import stopwords
 from nltk.stem.porter import PorterStemmer
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
-import streamlit as st
+from sklearn.model_selection import train_test_split
 
-# Download NLTK stopwords
-nltk.download('stopwords')
+from transformers import pipeline
+generator = pipeline("text-generation", model="gpt2", framework="pt")
 
-# Define a stemming function for text preprocessing
-port_stem = PorterStemmer()
-def stemming(content):
-    # Remove non-alphabetical characters, lower case, and split the text
-    stemmed_content = re.sub('[^a-zA-Z]', ' ', content)
-    stemmed_content = stemmed_content.lower().split()
-    # Remove stopwords and stem the remaining words
-    stemmed_content = [port_stem.stem(word) for word in stemmed_content if word not in stopwords.words('english')]
-    return ' '.join(stemmed_content)
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
 
-# Define file paths for saving/loading the model and vectorizer
-model_file = "model.pkl"
-vectorizer_file = "vectorizer.pkl"
+# ── DOWNLOAD NLTK RESOURCES ───────────────────────────────────
+nltk.download("stopwords")
+nltk.download("vader_lexicon")
 
-# Check if model and vectorizer are already saved. If yes, load them.
-if os.path.exists(model_file) and os.path.exists(vectorizer_file):
-    with open(model_file, "rb") as f:
-        model = pickle.load(f)
-    with open(vectorizer_file, "rb") as f:
-        vectorizer = pickle.load(f)
+# ── TEXT PREPROCESSING ────────────────────────────────────────
+porter = PorterStemmer()
+def stemming(text: str) -> str:
+    # keep only letters, lowercase, split
+    tokens = re.sub("[^a-zA-Z]", " ", text).lower().split()
+    # remove stopwords and stem
+    filtered = [porter.stem(w) for w in tokens if w not in stopwords.words("english")]
+    return " ".join(filtered)
+
+# ── FAKE‑NEWS MODEL SETUP ─────────────────────────────────────
+MODEL_FILE      = "model.pkl"
+VECTORIZER_FILE = "vectorizer.pkl"
+
+if os.path.exists(MODEL_FILE) and os.path.exists(VECTORIZER_FILE):
+    # load pre‑trained
+    with open(MODEL_FILE,      "rb") as f: model      = pickle.load(f)
+    with open(VECTORIZER_FILE, "rb") as f: vectorizer = pickle.load(f)
 else:
-    # If not saved, load the dataset and train the model
-    news_dataset = pd.read_csv(r"train.csv")
-    news_dataset = news_dataset.fillna('')
-    # Combine author and title into one text column
-    news_dataset['content'] = news_dataset['author'] + ' ' + news_dataset['title']
-    # Apply text preprocessing (stemming)
-    news_dataset['content'] = news_dataset['content'].apply(stemming)
-    
-    # Separate the features and labels
-    X = news_dataset['content'].values
-    Y = news_dataset['label'].values
-    
-    # Convert text to numerical features using TF-IDF
-    vectorizer = TfidfVectorizer()
-    X = vectorizer.fit_transform(X)
-    
-    # Split the dataset into training and testing sets (used here only for training)
-    X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, stratify=Y, random_state=2)
-    
-    # Train the Logistic Regression model
-    model = LogisticRegression()
-    model.fit(X_train, Y_train)
-    
-    # Save the trained model and vectorizer to disk
-    with open(model_file, "wb") as f:
-         pickle.dump(model, f)
-    with open(vectorizer_file, "wb") as f:
-         pickle.dump(vectorizer, f)
+    # train from CSV
+    df = pd.read_csv(r"C:\Users\ACER\Downloads\train (1).csv").fillna("")
+    df["content"] = (df["author"] + " " + df["title"]).apply(stemming)
+    X_all = TfidfVectorizer().fit_transform(df["content"])
+    y_all = df["label"].values
 
-# ----------------- Streamlit UI -----------------
-st.title("📰 Fake News Detection System")
-st.subheader("Enter the news headline and author name to predict its authenticity")
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_all, y_all, test_size=0.2, stratify=y_all, random_state=2
+    )
+    model      = LogisticRegression().fit(X_train, y_train)
+    vectorizer = TfidfVectorizer().fit(df["content"])
 
-# Take user input
+    # save
+    with open(MODEL_FILE,      "wb") as f: pickle.dump(model,      f)
+    with open(VECTORIZER_FILE, "wb") as f: pickle.dump(vectorizer, f)
+
+# ── SENTIMENT ANALYZER ────────────────────────────────────────
+sia = SentimentIntensityAnalyzer()
+
+# ── MBTI CLASSIFIER ───────────────────────────────────────────
+# Uses a DistilBERT‐based MBTI model from Hugging Face
+mbti_pipe = pipeline(
+    "text-classification",
+    model="parka735/mbti-classifier",
+    tokenizer="parka735/mbti-classifier",
+    return_all_scores=True,
+    device=0 if torch.cuda.is_available() else -1,
+    truncation=True,
+    max_length=512
+)
+
+# ── STREAMLIT UI ──────────────────────────────────────────────
+st.set_page_config(page_title="📰 Fake‑News + Sentiment + MBTI Detector")
+st.title("📰 Sentimental and Fake-News Detector")
+
 author_input = st.text_input("Author Name")
-title_input = st.text_area("News Title")
+title_input  = st.text_area("News Title")
 
 if st.button("Predict"):
-    if author_input and title_input:
-        # Combine the input fields and preprocess the text
-        user_input = author_input + " " + title_input
-        user_input_processed = stemming(user_input)
-        user_input_vectorized = vectorizer.transform([user_input_processed])
-        
-        # Make prediction using the saved (or pre-trained) model
-        prediction = model.predict(user_input_vectorized)
-        if prediction[0] == 0:
-            st.success("✅ The news is **Real**")
-        else:
-            st.error("❌ The news is **Fake**")
-    else:
+    if not author_input or not title_input:
         st.warning("⚠️ Please enter both Author Name and News Title.")
+    else:
+        raw_text = f"{author_input} {title_input}"
+        proc_text = stemming(raw_text)
+        vect_text = vectorizer.transform([proc_text])
+
+        # — Fake News Prediction —
+        label = model.predict(vect_text)[0]
+        if label == 0:
+            st.success("✅ **Real** News")
+        else:
+            st.error("❌ **Fake** News")
+
+        # — Sentiment Analysis —
+        scores = sia.polarity_scores(raw_text)
+        st.subheader("🔍 Sentiment Analysis")
+        st.write(f"• Positive: {scores['pos']:.3f}")
+        st.write(f"• Neutral : {scores['neu']:.3f}")
+        st.write(f"• Negative: {scores['neg']:.3f}")
+        st.write(f"• Compound: {scores['compound']:.3f}")
+        # bar chart
+        st.bar_chart(pd.DataFrame([scores]))
+
+        # — MBTI Classification —
+        #st.subheader("🧠 MBTI Personality Prediction")
+        #mbti_scores = mbti_pipe(raw_text)[0]  # list of dicts: {"label": "INTJ", "score": 0.xxx}
+        # convert to DataFrame, sort by score descending
+        #df_mbti = pd.DataFrame(mbti_scores).sort_values("score", ascending=False)
+        #df_mbti["score"] = df_mbti["score"].map(lambda x: f"{x:.3f}")
+        #st.dataframe(df_mbti, use_container_width=True)
+
+
+                # — MBTI Classification —
+        st.subheader("🧠 MBTI Sentimental Prediction")
+        mbti_scores = mbti_pipe(raw_text)[0]  # list of dicts: {"label":"INTJ","score":0.xxx}
+        df_mbti = pd.DataFrame(mbti_scores).sort_values("score", ascending=False)
+
+        # Keep a float copy for plotting
+        df_mbti["score_float"] = df_mbti["score"]
+
+        # Turn the original score into formatted strings
+        df_mbti["score"] = df_mbti["score"].map(lambda x: f"{x:.3f}")
+
+        # Show the table
+        st.dataframe(df_mbti[["label", "score"]], use_container_width=True)
+
+        # — MBTI Score Distribution Chart —
+        st.subheader("📊 MBTI Score Distribution")
+        chart_data = df_mbti.set_index("label")["score_float"]
+        st.bar_chart(chart_data)
