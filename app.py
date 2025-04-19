@@ -43,7 +43,7 @@ if os.path.exists(MODEL_FILE) and os.path.exists(VECTORIZER_FILE):
     with open(VECTORIZER_FILE, "rb") as f: vectorizer = pickle.load(f)
 else:
     # train from CSV
-    df = pd.read_csv(r"C:\Users\ACER\Downloads\train (1).csv").fillna("")
+    df = pd.read_csv(r"train.csv").fillna("")
     df["content"] = (df["author"] + " " + df["title"]).apply(stemming)
     X_all = TfidfVectorizer().fit_transform(df["content"])
     y_all = df["label"].values
