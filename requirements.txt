@@ -3,3 +3,6 @@ pandas
 nltk
 streamlit
 scikit-learn
+torch
+transformers
+tf-keras
