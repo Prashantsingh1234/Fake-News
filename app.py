@@ -60,7 +60,7 @@ sia = SentimentIntensityAnalyzer()
 mbti_model_name = "parka735/mbti-classifier"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-mbti_model = AutoModelForSequenceClassification.from_pretrained(mbti_model_name).to(device)
+mbti_model = AutoModelForSequenceClassification.from_pretrained(mbti_model_name)
 mbti_tokenizer = AutoTokenizer.from_pretrained(mbti_model_name)
 mbti_pipe = pipeline(
     "text-classification",
